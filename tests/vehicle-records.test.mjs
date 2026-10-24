@@ -1,0 +1,54 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+import {createApp} from '../server.mjs';
+import {expiryStatus,garageSummary,vehicleDocuments,validDate,indiaToday} from '../public/vehicle-data.js';
+import {quote} from '../public/catalog.js';
+
+test('expiry reminders handle India dates, boundaries, leap years and EVs',()=>{
+  assert.equal(indiaToday(new Date('2026-10-18T19:00:00Z')),'2026-10-19');
+  assert.equal(validDate('2026-02-30'),false);assert.equal(validDate('2024-02-29'),true);assert.equal(validDate('2026-02-29'),false);
+  assert.deepEqual(expiryStatus('2026-10-18','2026-10-18'),{kind:'due',label:'Expires today',days:0});
+  assert.equal(expiryStatus('2026-11-17','2026-10-18').kind,'due');
+  assert.equal(expiryStatus('2026-11-18','2026-10-18').kind,'current');
+  assert.equal(expiryStatus('2026-10-17','2026-10-18').kind,'expired');
+  assert.equal(expiryStatus('','2026-10-18').kind,'missing');
+  const ev={type:'car',fuelType:'electric',documents:{puc:{expiresOn:'2026-01-01'}},challans:[]};
+  assert.equal(vehicleDocuments(ev,'2026-10-18').find(d=>d.id==='puc').kind,'na');
+  assert.equal(vehicleDocuments(ev,'2026-10-18').find(d=>d.id==='registration').label,'Registration (RC)');
+  assert.equal(vehicleDocuments(ev,'2026-10-18').find(d=>d.id==='registration').statusLabel,'Expiry not saved');
+  assert.equal(garageSummary([ev],'2026-10-18').expired.length,0);
+  assert.equal(garageSummary([ev],'2026-10-18').missing.length,2);
+});
+test('electric and diesel vehicles cannot book incompatible fuel or engine services',()=>{
+  assert.throws(()=>quote([{id:'oil-change',quantity:1}],'car','','electric'),/vehicle/);
+  assert.throws(()=>quote([{id:'petrol',quantity:1}],'car','','diesel'),/vehicle/);
+  assert.throws(()=>quote([{id:'diesel',quantity:1}],'car','','petrol'),/vehicle/);
+  assert.doesNotThrow(()=>quote([{id:'diesel',quantity:1}],'car','','diesel'));
+  assert.doesNotThrow(()=>quote([{id:'wash',quantity:1}],'car','','electric'));
+});
+test('vehicle identity, documents and challans persist through their full lifecycle',async t=>{
+  const dataDir=mkdtempSync(path.join(tmpdir(),'pitstop-vehicle-test-')),server=createApp({dataDir});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const base=`http://127.0.0.1:${server.address().port}`;
+  const request=async(route,method='GET',body)=>{const res=await fetch(base+'/api/'+route,{method,headers:method==='GET'?{}:{'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});return {status:res.status,data:await res.json()};};
+  t.after(async()=>{await new Promise(resolve=>server.close(resolve));rmSync(dataDir,{recursive:true,force:true});});
+  let vehicle,challan,order;
+  const identity={type:'car',brand:'Hyundai',model:'i20',year:2022,fuelType:'petrol',number:'KA 02 AB 5678'};
+  await t.test('creates vehicle identity with model year and normalized registration',async()=>{const result=await request('vehicles','POST',identity);assert.equal(result.status,201);vehicle=result.data;assert.equal(vehicle.number,'KA02AB5678');assert.equal(vehicle.year,2022);assert.deepEqual(vehicle.documents,{});assert.deepEqual(vehicle.challans,[]);});
+  await t.test('validates year, registration duplicates and fuel compatibility',async()=>{assert.equal((await request('vehicles','POST',identity)).status,400);assert.equal((await request('vehicles','POST',{...identity,number:'',year:1800})).status,400);assert.equal((await request('vehicles','POST',{...identity,number:'',year:9999})).status,400);assert.equal((await request('vehicles','POST',{...identity,number:'',type:'bike',fuelType:'diesel'})).status,400);});
+  await t.test('supports a manual brand/model and unknown year for older vehicles',async()=>{const result=await request('vehicles','POST',{type:'bike',brand:'Custom marque',model:'Imported 250',number:'',year:'',fuelType:'petrol'});assert.equal(result.status,201);assert.equal(result.data.year,null);});
+  await t.test('adds registration, policy and PUC details',async()=>{const result=await request(`vehicles/${vehicle.id}/documents`,'PUT',{registration:{rto:'KA-02 Bengaluru West',startsOn:'2022-05-04',expiresOn:'2037-05-03'},insurance:{provider:'Demo insurer',number:'DEMO-POLICY-1',startsOn:'2026-01-01',expiresOn:'2026-12-31'},puc:{number:'DEMO-PUC-1',startsOn:'2026-04-01',expiresOn:'2026-10-17'}});assert.equal(result.status,200);assert.equal(result.data.documents.insurance.number,'DEMO-POLICY-1');});
+  await t.test('rejects impossible dates and reversed validity periods',async()=>{assert.equal((await request(`vehicles/${vehicle.id}/documents`,'PUT',{puc:{startsOn:'2026-02-30'}})).status,400);assert.equal((await request(`vehicles/${vehicle.id}/documents`,'PUT',{insurance:{startsOn:'2026-12-31',expiresOn:'2026-01-01'}})).status,400);assert.equal((await request(`vehicles/${vehicle.id}/documents`,'PUT',{insurance:null})).status,400);});
+  await t.test('partial document updates preserve unrelated documents',async()=>{const result=await request(`vehicles/${vehicle.id}/documents`,'PUT',{puc:{number:'RENEWED-DEMO-PUC',startsOn:'2026-10-18',expiresOn:'2027-04-17'}});assert.equal(result.status,200);assert.equal(result.data.documents.insurance.number,'DEMO-POLICY-1');assert.equal(result.data.documents.registration.rto,'KA-02 Bengaluru West');});
+  await t.test('creates an unpaid challan as a manual record',async()=>{const result=await request(`vehicles/${vehicle.id}/challans`,'POST',{reference:'DEMO-CH-123',description:'Demo traffic challan',location:'Demo Road',issuedOn:'2026-01-01',amount:'500.25',status:'unpaid',source:'government'});assert.equal(result.status,201);challan=result.data;assert.equal(challan.source,'manual');assert.equal(challan.amount,500.25);});
+  await t.test('rejects duplicate challan numbers, invalid amounts and future issue dates',async()=>{const body={...challan};assert.equal((await request(`vehicles/${vehicle.id}/challans`,'POST',body)).status,400);for(const amount of ['','NaN',-1,1.234])assert.equal((await request(`vehicles/${vehicle.id}/challans`,'POST',{...body,reference:'OTHER-'+amount,amount})).status,400);assert.equal((await request(`vehicles/${vehicle.id}/challans`,'POST',{...body,reference:'OTHER',issuedOn:'2099-01-01'})).status,400);});
+  await t.test('saves booking snapshots before records are changed',async()=>{await request('profile','PUT',{name:'Demo vehicle rider',phone:'9876543210'});const result=await request('orders','POST',{vehicleId:vehicle.id,addressId:'home',items:[{id:'wash',quantity:1}],payment:'Cash after service',schedule:'asap'});assert.equal(result.status,201);order=result.data;assert.equal(order.vehicle.year,2022);assert.equal(order.vehicle.documents.insurance.provider,'Demo insurer');});
+  await t.test('identity edits preserve document and challan records',async()=>{const result=await request('vehicles/'+vehicle.id,'PUT',{...identity,model:'i20 Sportz',year:2023,documents:{},challans:[]});assert.equal(result.status,200);assert.equal(result.data.documents.insurance.provider,'Demo insurer');assert.equal(result.data.challans.length,1);assert.equal(result.data.year,2023);});
+  await t.test('updates a challan to paid without changing its manual source',async()=>{const result=await request(`vehicles/${vehicle.id}/challans/${challan.id}`,'PUT',{...challan,status:'paid',source:'verified'});assert.equal(result.status,200);assert.equal(result.data.status,'paid');assert.equal(result.data.source,'manual');const {data}=await request('state');assert.equal(garageSummary(data.vehicles).outstanding,0);assert.equal(data.orders.find(o=>o.id===order.id).vehicle.challans[0].status,'unpaid');assert.equal(data.orders.find(o=>o.id===order.id).vehicle.model,'i20');});
+  await t.test('rejects records belonging to a different vehicle',async()=>{assert.equal((await request(`vehicles/activa/challans/${challan.id}`,'PUT',challan)).status,400);assert.equal((await request(`vehicles/missing/documents`,'PUT',{})).status,400);});
+  await t.test('records survive reopening the data store',async()=>{const second=createApp({dataDir});await new Promise(resolve=>second.listen(0,'127.0.0.1',resolve));try{const state=await (await fetch(`http://127.0.0.1:${second.address().port}/api/state`)).json();const saved=state.vehicles.find(v=>v.id===vehicle.id);assert.equal(saved.year,2023);assert.equal(saved.documents.puc.number,'RENEWED-DEMO-PUC');assert.equal(saved.challans[0].status,'paid');}finally{await new Promise(resolve=>second.close(resolve));}});
+  await t.test('removes a manual challan without changing documents or bookings',async()=>{assert.equal((await request(`vehicles/${vehicle.id}/challans/${challan.id}`,'DELETE',{})).status,200);const {data}=await request('state');assert.equal(data.vehicles.find(v=>v.id===vehicle.id).challans.length,0);assert.equal(data.vehicles.find(v=>v.id===vehicle.id).documents.insurance.number,'DEMO-POLICY-1');assert.equal(data.orders.find(o=>o.id===order.id).vehicle.challans.length,1);});
+});

@@ -1,0 +1,10 @@
+# Mechanic portraits
+
+- Project asset: `public/assets/star-mechanics.png`
+- Generated with the built-in image-generation tool on 19 October 2026; no external API key / CLI fallback used.
+- One wide triptych is displayed as three separately framed portrait cards through CSS. Subjects are fictional, AI-generated people. Uniform brand marks are design concepts and do not establish any actual affiliation.
+- Home advertising artwork uses the app's existing native SVG illustration system and HTML typography.
+
+## Final generation prompt
+
+Use case: photorealistic-natural. Asset type: three-panel mechanic portrait triptych for the Indian vehicle-service web app Pitstop. Generate ONE wide image with THREE EQUAL vertical portrait panels, edge-to-edge, no gutters, each subject fully within their own third, centered and framed from head to waist. Three distinct fictional Indian automobile mechanics, real human photographic appearance, naturally textured skin, warm approachable confident expressions: left a bearded man age 38 with short black hair, Royal Enfield specialist, holding a wrench; middle a woman age 30 with dark hair tied back, scooter specialist, holding a small diagnostic tablet; right a man age 45 with neatly groomed moustache, vehicle pre-purchase inspection specialist, holding a clipboard. All wear clean premium dark forest green polo mechanic shirts. Each shirt has clearly legible embroidered white 'pitstop' wordmark on left chest, and small 'Castrol', 'Shell', 'ACKO' sponsor-style patches on right chest and sleeves as fictional uniform concepts. No other text or profile captions inside image. Background each panel softly blurred Indian modern garage with warm cream walls, daylight, muted sage tool wall, no vehicles obscuring people. Sophisticated editorial photography, authentic workshop staff portrait, natural proportions and hands, no cartoon, no 3D rendering, no stock photo watermarks. Each face on same vertical alignment around upper third, ample shoulder room, all three people equally sized. Image intended as three independently cropped portrait cards using the left, middle, and right thirds.
